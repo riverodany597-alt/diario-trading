@@ -4,11 +4,13 @@ App personal para registrar operaciones de trading: antes, durante y después de
 
 - Funciona en el celular y en el PC (se instala desde Chrome o Edge).
 - Funciona sin internet.
-- Los datos se guardan en el dispositivo. Usa "Descargar respaldo" (Historial → Logros y respaldo) cada semana.
+- Se sincroniza entre el celular y el PC al entrar con Google (Firebase). Sin internet, los cambios se guardan y se suben solos al reconectar.
+- Igual conviene "Descargar respaldo" (Historial → Logros y respaldo) de vez en cuando.
 
 ## Archivos
 
 - `index.html`: la app completa.
 - `manifest.webmanifest`: nombre, colores e íconos para instalarla.
 - `sw.js`: guarda la app en el dispositivo para usarla sin internet.
+- `firebase-sync.js`: conexión con Firebase (inicio de sesión con Google y base de datos).
 - `icons/`: íconos de la app.

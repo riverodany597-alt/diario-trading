@@ -781,6 +781,8 @@
   .soft-note.lot-alert{background:var(--red-soft);border-color:var(--red);color:var(--text);}
   .soft-note.lot-alert svg{color:var(--red);}
   .set-row input[type=number]{width:90px;}
+  .soft-note.sync-note{background:var(--blue-soft);border-color:var(--blue);color:var(--text);}
+  .soft-note.sync-note svg{color:var(--blue);}
 </style>
 </head>
 <body>
@@ -861,6 +863,12 @@
     <div class="traffic tl-red" id="traffic" role="status" aria-live="polite">
       <div class="tl-lights"><i></i><i></i><i></i></div>
       <div><p class="tl-title" id="tl-title">NO ENTRES todavía</p><p class="tl-sub" id="tl-sub"></p></div>
+    </div>
+    <div class="soft-note sync-note" id="sync-banner" hidden>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3M18 3v4h-4M6 21v-4h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div style="flex:1;"><b>Sincroniza tu diario</b> entre el celular y el PC: entra con tu cuenta de Google.
+        <div class="btn-row" style="justify-content:flex-start;margin-top:8px;"><button type="button" class="btn" id="btn-banner-signin" style="padding:6px 12px;font-size:.82rem;">Entrar con Google</button><button type="button" class="btn secondary" id="btn-banner-later" style="padding:6px 12px;font-size:.82rem;">Ahora no</button></div>
+      </div>
     </div>
     <details class="plan-reminder" id="plan-reminder" open>
       <summary>Mi plan en 5 líneas</summary>
@@ -1236,9 +1244,11 @@
 
     <div class="hsub" id="hsub-more">
       <div class="card" id="cloud-card">
-        <h2>Copia en la nube</h2>
+        <h2 id="cloud-title">Copia en la nube</h2>
         <p class="sub" id="cloud-status">Comprobando…</p>
         <div class="btn-row" style="justify-content:flex-start;">
+          <button type="button" class="btn" id="btn-sync-signin" hidden>Entrar con Google</button>
+          <button type="button" class="btn secondary" id="btn-sync-signout" hidden>Cerrar sesión</button>
           <button type="button" class="btn secondary" id="btn-cloud-sync" hidden>Sincronizar ahora</button>
           <button type="button" class="btn secondary" id="btn-cloud-restore" hidden>Restaurar desde la nube</button>
         </div>
@@ -4953,13 +4963,21 @@
 
   /* ---------------- Copia en la nube (capability "db") ---------------- */
   var SYNC_KEYS = {tj_history:1, tj_plan_short:1, tj_reviews:1, tj_goals:1, tj_rest:1, tj_settings:1, tj_plan:1, tj_account_capital:1, tj_practice_score:1, tj_practice_types:1, tj_practice_level:1};
-  var cloud = {db:null, assets:null, imgFail:0, state:'checking', lastSync:null, err:'', pushed:{}, metaJson:'', busy:false, dirty:false, timer:null, skipped:0, ready:false};
+  function stableStr(v){
+    if(v === null || typeof v !== 'object') return JSON.stringify(v === undefined ? null : v);
+    if(Array.isArray(v)) return '[' + v.map(function(x){ return x === undefined ? 'null' : stableStr(x); }).join(',') + ']';
+    return '{' + Object.keys(v).sort().filter(function(k){ return v[k] !== undefined; }).map(function(k){ return JSON.stringify(k) + ':' + stableStr(v[k]); }).join(',') + '}';
+  }
+  function hashStr(str){ var h = 5381; for(var i = 0; i < str.length; i++){ h = ((h << 5) + h + str.charCodeAt(i)) | 0; } return (h >>> 0).toString(36) + '.' + str.length; }
+  function syncKnown(){ var k = safeGet('tj_sync_known', {}); return (k && typeof k === 'object' && !Array.isArray(k)) ? k : {}; }
+  var cloud = {db:null, user:null, unsub:[], assets:null, imgFail:0, state:'checking', lastSync:null, err:'', pushed:{}, metaJson:'', busy:false, dirty:false, timer:null, skipped:0, ready:false};
 
   function cloudDocId(t){ return String(t.id).replace(/[^A-Za-z0-9_.~:@+-]/g, '_'); }
   function cloudTradeBody(t){
     var c = {};
     Object.keys(t).forEach(function(k){ if(k !== 'imagen') c[k] = t[k]; });
     c.hasImage = !!t.imagen;
+    if(IS_APP && typeof t.imagen === 'string' && t.imagen.length < 700000) c.imagen = t.imagen;
     return c;
   }
   function cloudMetaBody(){
@@ -4983,15 +5001,28 @@
     if(!el) return;
     var syncBtn = qs('#btn-cloud-sync'), restBtn = qs('#btn-cloud-restore');
     var on = !!cloud.db;
-    syncBtn.hidden = !on; restBtn.hidden = !on;
+    syncBtn.hidden = !on; restBtn.hidden = !on || IS_APP;
+    qs('#btn-sync-signin').hidden = !(IS_APP && (cloud.state === 'signedout' || cloud.state === 'signing'));
+    qs('#btn-sync-signin').disabled = cloud.state === 'signing';
+    qs('#btn-sync-signout').hidden = !(IS_APP && cloud.user);
+    if(IS_APP) qs('#cloud-title').textContent = 'Sincronización entre dispositivos';
+    var banner = qs('#sync-banner');
+    if(banner){
+      var later = false; try{ later = sessionStorage.getItem('tj_sync_later') === '1'; }catch(e){}
+      banner.hidden = !(IS_APP && cloud.state === 'signedout' && !later);
+    }
     var txt;
     if(cloud.state === 'checking') txt = 'Comprobando…';
+    else if(cloud.state === 'signedout') txt = 'Entra con tu cuenta de Google para que tu diario se sincronice solo entre el celular y el PC. Mientras tanto, tus datos se guardan en este dispositivo.';
+    else if(cloud.state === 'signing') txt = 'Abriendo el inicio de sesión de Google…';
+    else if(IS_APP && cloud.db && cloud.state !== 'error' && typeof navigator !== 'undefined' && navigator.onLine === false) txt = 'Sin internet: tus cambios se guardan aquí y se suben solos cuando vuelvas a conectarte.' + (cloud.user && cloud.user.email ? ' · ' + cloud.user.email : '');
     else if(cloud.state === 'off') txt = IS_APP ? 'En la app tus datos se guardan en este dispositivo (celular o PC). Descarga un respaldo cada semana y guárdalo en tu Drive o correo: es tu seguro.' : 'No disponible en esta vista: tu historial se guarda solo en este navegador. Descarga un respaldo de vez en cuando.';
     else if(cloud.state === 'syncing') txt = 'Sincronizando…';
-    else if(cloud.state === 'error') txt = 'No se pudo guardar en la nube (' + cloud.err + '). Tus datos siguen guardados en este navegador. Prueba "Sincronizar ahora" más tarde.';
+    else if(cloud.state === 'error') txt = (IS_APP ? 'No se pudo sincronizar (' : 'No se pudo guardar en la nube (') + cloud.err + '). Tus datos siguen guardados en este ' + (IS_APP ? 'dispositivo' : 'navegador') + '. Prueba "Sincronizar ahora" más tarde.';
     else {
       var d = cloud.lastSync;
-      txt = 'Guardado en la nube ✓ · ' + history.length + ' operaciones' + (d ? ' · última sincronización ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) : '');
+      txt = (IS_APP ? 'Sincronizado ✓ · ' : 'Guardado en la nube ✓ · ') + history.length + ' operaciones' + (d ? ' · última sincronización ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) : '');
+      if(IS_APP && cloud.user && cloud.user.email) txt += ' · ' + cloud.user.email;
       var nImg = history.filter(function(t){ return validAssetId(t.imagenId); }).length;
       if(nImg) txt += ' · ' + nImg + (nImg === 1 ? ' captura' : ' capturas');
       if(cloud.skipped) txt += ' · ' + cloud.skipped + ' no se pudieron subir por tamaño';
@@ -5049,24 +5080,29 @@
       var want = {};
       history.forEach(function(t){ want[cloudDocId(t)] = t; });
       var ids = Object.keys(want);
+      var known = syncKnown();
       for(var i = 0; i < ids.length; i++){
         var body = cloudTradeBody(want[ids[i]]);
-        var js = JSON.stringify(body);
-        if(js.length > 240000){ cloud.skipped++; continue; }
+        var js = stableStr(body);
+        if(js.length > (IS_APP ? 950000 : 240000)){ cloud.skipped++; continue; }
         if(cloud.pushed[ids[i]] === js) continue;
         await col.doc(ids[i]).set(body);
         cloud.pushed[ids[i]] = js;
+        known[ids[i]] = hashStr(js);
       }
       var gone = Object.keys(cloud.pushed).filter(function(id){ return !want[id]; });
       for(var g = 0; g < gone.length; g++){
         await col.doc(gone[g]).delete();
         delete cloud.pushed[gone[g]];
+        delete known[gone[g]];
       }
+      safeSet('tj_sync_known', known);
       var meta = cloudMetaBody();
-      var mj = JSON.stringify(meta);
+      var mj = stableStr(meta);
       if(mj !== cloud.metaJson){
         await cloud.db.doc('state/main').set(meta);
         cloud.metaJson = mj;
+        safeSet('tj_sync_meta', hashStr(mj));
       }
       cloud.state = 'ok'; cloud.lastSync = new Date(); cloud.err = '';
     }catch(e){
@@ -5086,7 +5122,7 @@
   function remoteToTrade(b, localImg){
     var t = {};
     Object.keys(b).forEach(function(k){ if(k !== 'hasImage') t[k] = b[k]; });
-    t.imagen = localImg || null;
+    t.imagen = (typeof b.imagen === 'string' && b.imagen) ? b.imagen : (localImg || null);
     return normalizeTrade(t);
   }
   function isEmptyVal(v){
@@ -5131,41 +5167,201 @@
     renderEditBanner();
   }
 
-  async function cloudInit(){
-    var db = null;
-    try{ db = (window.claude && typeof window.claude.use === 'function') ? await window.claude.use('db') : null; }catch(e){ db = null; }
-    if(!db){ cloud.state = 'off'; renderCloudStatus(); return; }
+  function cloudStop(){
+    cloud.unsub.forEach(function(u){ try{ u(); }catch(e){} });
+    cloud.unsub = [];
+    cloud.db = null; cloud.ready = false; cloud.pushed = {}; cloud.metaJson = '';
+    clearTimeout(cloud.timer);
+  }
+  async function cloudStart(db){
+    cloudStop();
     cloud.db = db;
-    try{ cloud.assets = await window.claude.use('assets'); }catch(e){ cloud.assets = null; }
+    cloud.state = 'syncing'; renderCloudStatus();
+    if(!IS_APP){ try{ cloud.assets = await window.claude.use('assets'); }catch(e){ cloud.assets = null; } }
+    if(typeof db.onWriteError === 'function') db.onWriteError(function(e){ cloud.state = 'error'; cloud.err = (e && e.code) ? String(e.code) : 'error'; renderCloudStatus(); });
     try{
       var snap = await db.collection('trades').get();
+      if(cloud.db !== db) return;
       var remote = {};
       snap.docs.forEach(function(d){
         var b = d.data();
-        if(b){ remote[d.id] = b; cloud.pushed[d.id] = JSON.stringify(b); }
+        if(b){ remote[d.id] = b; cloud.pushed[d.id] = stableStr(b); }
       });
       var metaSnap = await db.doc('state/main').get();
+      if(cloud.db !== db) return;
       var meta = metaSnap.exists ? metaSnap.data() : null;
-      var have = {};
-      history.forEach(function(t){ have[cloudDocId(t)] = true; });
-      var added = [];
-      Object.keys(remote).forEach(function(id){ if(!have[id]) added.push(remoteToTrade(remote[id], null)); });
-      if(added.length){
-        history = history.concat(added).sort(function(a, b){ return (Number(a.id) || 0) - (Number(b.id) || 0); });
+      var known = syncKnown();
+      var local = {};
+      history.forEach(function(t){ local[cloudDocId(t)] = t; });
+      var added = 0, removed = 0, updated = 0;
+      var next = [];
+      history.forEach(function(t){
+        var id = cloudDocId(t);
+        if(!remote[id]){
+          if(known[id]){ removed++; delete known[id]; return; }   // se borró en otro dispositivo
+          next.push(t); return;                                    // nueva aquí: se sube
+        }
+        var rh = hashStr(cloud.pushed[id]);
+        var rN = remoteToTrade(remote[id], t.imagen);
+        var nb = stableStr(cloudTradeBody(rN));
+        var lb = stableStr(cloudTradeBody(t));
+        if(lb === nb){ next.push(t); cloud.pushed[id] = lb; known[id] = rh; return; }   // iguales
+        if(known[id] && rh === known[id]){ next.push(t); return; }                    // la cambiaste aquí sin internet: se sube
+        next.push(rN); cloud.pushed[id] = nb; known[id] = rh; updated++;              // cambió en el otro dispositivo
+      });
+      Object.keys(remote).forEach(function(id){
+        if(!local[id]){
+          var nt = remoteToTrade(remote[id], null);
+          next.push(nt); known[id] = hashStr(cloud.pushed[id]); cloud.pushed[id] = stableStr(cloudTradeBody(nt)); added++;
+        }
+      });
+      if(added || removed || updated){
+        history = next.sort(function(a, b){ return (Number(a.id) || 0) - (Number(b.id) || 0); });
         safeSet('tj_history', history);
         refreshAfterCloud();
-        showToast('Recuperamos ' + added.length + ' operaciones de tu copia en la nube ✓');
+        if(added) showToast(IS_APP ? ('Llegaron ' + added + ' operaciones de tu otro dispositivo ✓') : ('Recuperamos ' + added + ' operaciones de tu copia en la nube ✓'));
       }
-      applyMeta(meta, false);
-      cloud.metaJson = meta ? JSON.stringify(meta) : '';
+      safeSet('tj_sync_known', known);
+      if(meta){
+        var rm = stableStr(meta);
+        var baseMeta = safeGet('tj_sync_meta', '');
+        var localMetaHash = hashStr(stableStr(cloudMetaBody()));
+        if(IS_APP){
+          if(!(baseMeta && hashStr(rm) === baseMeta && localMetaHash !== baseMeta)) applyMeta(meta, true);
+        } else {
+          applyMeta(meta, false);
+        }
+        cloud.metaJson = rm;
+        safeSet('tj_sync_meta', hashStr(rm));
+      }
       cloud.ready = true;
       await cloudPush();
+      if(typeof db.listen === 'function') cloudListen(db);
     }catch(e){
       cloud.ready = true;
       cloud.state = 'error';
       cloud.err = (e && e.code) ? String(e.code) : 'error';
       renderCloudStatus();
     }
+  }
+  function cloudListen(db){
+    cloud.unsub.push(db.listen('trades', function(changes){
+      if(cloud.db !== db) return;
+      var known = syncKnown(), changed = false, arrived = 0;
+      changes.forEach(function(c){
+        if(c.pending) return;
+        var id = c.id;
+        var idx = -1;
+        history.forEach(function(t, i){ if(cloudDocId(t) === id) idx = i; });
+        if(c.type === 'removed'){
+          delete cloud.pushed[id]; delete known[id];
+          if(idx > -1){ history.splice(idx, 1); changed = true; }
+          return;
+        }
+        var js = stableStr(c.data);
+        known[id] = hashStr(js);
+        var nt = remoteToTrade(c.data, idx > -1 ? history[idx].imagen : null);
+        var nb = stableStr(cloudTradeBody(nt));
+        cloud.pushed[id] = nb;
+        if(idx > -1){
+          if(stableStr(cloudTradeBody(history[idx])) === nb) return;
+          history[idx] = nt;
+        } else {
+          history.push(nt); arrived++;
+        }
+        changed = true;
+      });
+      safeSet('tj_sync_known', known);
+      if(changed){
+        history.sort(function(a, b){ return (Number(a.id) || 0) - (Number(b.id) || 0); });
+        safeSet('tj_history', history);
+        refreshAfterCloud();
+        if(typeof renderWarnings === 'function') renderWarnings();
+        if(arrived) showToast(arrived === 1 ? 'Llegó una operación de tu otro dispositivo ✓' : ('Llegaron ' + arrived + ' operaciones de tu otro dispositivo ✓'));
+        cloud.lastSync = new Date(); renderCloudStatus();
+      }
+    }));
+    cloud.unsub.push(db.listenDoc('state/main', function(data, pending){
+      if(cloud.db !== db || pending || !data) return;
+      var rm = stableStr(data);
+      if(rm === cloud.metaJson) return;
+      applyMeta(data, true);
+      cloud.metaJson = stableStr(cloudMetaBody());
+      safeSet('tj_sync_meta', hashStr(rm));
+      cloud.lastSync = new Date(); renderCloudStatus();
+    }));
+  }
+  function waitForFirebase(){
+    return new Promise(function(res){
+      if(window.TJFB) return res(window.TJFB);
+      var done = false;
+      window.addEventListener('tjfb-ready', function(){ if(!done){ done = true; res(window.TJFB || null); } });
+      setTimeout(function(){ if(!done){ done = true; res(window.TJFB || null); } }, 20000);
+    });
+  }
+  async function cloudInit(){
+    if(IS_APP){
+      var fb = await waitForFirebase();
+      if(!fb){ cloud.state = 'off'; renderCloudStatus(); return; }
+      fb.onAuth(function(user){
+        var before = cloud.user ? cloud.user.uid : null;
+        cloud.user = user;
+        if(user){
+          if(before !== user.uid || !cloud.db) cloudStart(fb.db(user.uid));
+        } else {
+          cloudStop();
+          cloud.state = 'signedout';
+          renderCloudStatus();
+        }
+        if(typeof renderSettingsExtra === 'function' && qs('#settings-modal') && qs('#settings-modal').classList.contains('show')) renderSettingsExtra();
+      });
+      return;
+    }
+    var db = null;
+    try{ db = (window.claude && typeof window.claude.use === 'function') ? await window.claude.use('db') : null; }catch(e){ db = null; }
+    if(!db){ cloud.state = 'off'; renderCloudStatus(); return; }
+    await cloudStart(db);
+  }
+  async function cloudSignIn(){
+    if(!window.TJFB) return;
+    cloud.state = 'signing'; renderCloudStatus();
+    try{
+      await window.TJFB.signIn();
+    }catch(e){
+      cloud.state = cloud.user ? 'ok' : 'signedout';
+      renderCloudStatus();
+      var code = e && e.code ? String(e.code) : '';
+      if(code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') showToast('Inicio de sesión cancelado');
+      else if(code === 'auth/unauthorized-domain') showToast('Falta autorizar este dominio en Firebase (Authentication → Dominios autorizados)');
+      else if(code === 'auth/network-request-failed') showToast('Necesitas internet para entrar con Google');
+      else showToast('No se pudo entrar con Google (' + (code || 'error') + ')');
+    }
+  }
+  function cloudSignOut(){
+    showConfirm('¿Cerrar sesión? Tus datos se quedan en este dispositivo, pero dejarán de sincronizarse hasta que vuelvas a entrar.', function(){
+      if(window.TJFB) window.TJFB.signOut();
+    });
+  }
+  qs('#btn-sync-signin').addEventListener('click', cloudSignIn);
+  qs('#btn-banner-signin').addEventListener('click', cloudSignIn);
+  qs('#btn-sync-signout').addEventListener('click', cloudSignOut);
+  qs('#btn-banner-later').addEventListener('click', function(){
+    try{ sessionStorage.setItem('tj_sync_later', '1'); }catch(e){}
+    qs('#sync-banner').hidden = true;
+  });
+  window.addEventListener('online', function(){ renderCloudStatus(); if(cloud.db && cloud.ready) cloudNotify('tj_history'); });
+  window.addEventListener('offline', renderCloudStatus);
+  if(IS_APP){
+    settingsSections.unshift(function(){
+      var who = cloud.user ? ('Sincronizando con <b>' + escapeHtml(cloud.user.email || cloud.user.name || 'tu cuenta') + '</b>.') : 'Entra con Google para tener el mismo diario en el celular y en el PC.';
+      return '<div class="set-block"><h4>Sincronización</h4><p class="hint">' + who + '</p>' +
+        (cloud.user ? '<button type="button" class="btn secondary" data-sync-act="out">Cerrar sesión</button>' : '<button type="button" class="btn" data-sync-act="in">Entrar con Google</button>') + '</div>';
+    });
+    qs('#settings-extra').addEventListener('click', function(e){
+      var b = e.target.closest('[data-sync-act]');
+      if(!b) return;
+      if(b.getAttribute('data-sync-act') === 'in') cloudSignIn(); else { closeSettings(); cloudSignOut(); }
+    });
   }
 
   qs('#btn-cloud-sync').addEventListener('click', function(){
@@ -5186,7 +5382,7 @@
         history.forEach(function(t){ if(t.imagen) imgs[cloudDocId(t)] = t.imagen; });
         history = ids.map(function(id){ return remoteToTrade(remote[id], imgs[id]); }).sort(function(a, b){ return (Number(a.id) || 0) - (Number(b.id) || 0); });
         safeSet('tj_history', history);
-        ids.forEach(function(id){ cloud.pushed[id] = JSON.stringify(remote[id]); });
+        ids.forEach(function(id){ cloud.pushed[id] = stableStr(remote[id]); });
         try{
           var ms = await cloud.db.doc('state/main').get();
           if(ms.exists) applyMeta(ms.data(), true);
@@ -5241,5 +5437,6 @@
   window.addEventListener('appinstalled', function(){ pill.hidden = true; });
 })();
 </script>
+<script src="firebase-sync.js" defer></script>
 </body>
 </html>
